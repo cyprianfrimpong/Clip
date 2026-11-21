@@ -17,6 +17,7 @@ nav button.on{color:var(--pk)}nav .plus{color:#fff;background:var(--pk);border-r
 button{font:inherit;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid var(--cy);outline-offset:2px}
 .feed{scroll-snap-type:y mandatory;height:100%;overflow-y:auto}
 .v{position:relative;height:100%;scroll-snap-align:start;color:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.v video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
 .v .em{font-size:110px;filter:drop-shadow(0 8px 20px #0006)}
 .meta{position:absolute;left:16px;bottom:20px;right:90px;text-shadow:0 1px 6px #0008}.meta p{margin:4px 0 0}
 .rail{position:absolute;right:12px;bottom:20px;display:flex;flex-direction:column;gap:14px}
@@ -56,7 +57,7 @@ const GR=['linear-gradient(160deg,#ff2d6f,#7a2cff)','linear-gradient(160deg,#2ee
 const EM=['😎','🔥','🐶','🎸','🍜','🏄','💃','🌈'];
 const GIFTS={rose:{n:'Rose',e:'🌹',c:1},coffee:{n:'Coffee',e:'☕',c:5},crown:{n:'Crown',e:'👑',c:50},lion:{n:'Lion',e:'🦁',c:299},rocket:{n:'Rocket',e:'🚀',c:500}};
 const PACKS=[[70,'$0.99'],[350,'$4.99'],[700,'$9.99']];
-let tok=null,tab='feed',L=null,es=null,seq=0,coins=0,draft={e:EM[0],g:0};
+let tok=null,tab='feed',L=null,es=null,seq=0,coins=0,draft={e:EM[0],g:0,file:null};
 try{tok=localStorage.getItem('clip_t')}catch(e){}
 
 async function api(method,path,body){
@@ -76,13 +77,14 @@ async function draw(){
  <div class="row"><button class="btn" data-a="login">Log in</button><button class="btn alt" data-a="signup">Create account</button></div></div></div>`;return}
  try{
  if(tab==='feed'){const f=await api('GET','/feed');if(my!==seq)return;
-  m.innerHTML=f.length?`<div class="feed">${f.map(v=>`<section class="v" style="background:${GR[v.bg%4]}"><div class="em">${esc(v.emoji)}</div>
+  m.innerHTML=f.length?`<div class="feed">${f.map(v=>`<section class="v" style="background:${GR[v.bg%4]}">${v.has_video?`<video src="${API_BASE}/media/${v.id}" playsinline loop muted preload="metadata"></video>`:`<div class="em">${esc(v.emoji)}</div>`}
   <div class="meta"><b>@${esc(v.by)}</b><p>${esc(v.caption)}</p></div><div class="rail">
   <button data-a="like" data-id="${v.id}" class="${v.liked?'on':''}" aria-label="Like">♥<small>${v.likes}</small></button>
   <button data-a="fol" data-by="${esc(v.by)}" aria-label="Follow">${v.following?'✓':'+'}<small>${v.following?'Following':'Follow'}</small></button></div></section>`).join('')}</div>`
-  :`<div class="pad"><h2>Nothing here yet</h2><p>Tap + Post to share the first video.</p></div>`}
+  :`<div class="pad"><h2>Nothing here yet</h2><p>Tap + Post to share the first video.</p></div>`;watchVideos()}
  if(tab==='post')m.innerHTML=`<div class="pad"><h2>Post a video</h2><div class="card"><label>Caption<input id="cap" maxlength="60" placeholder="What’s happening?"></label>
-  <p>Pick a clip</p><div class="row pick">${EM.map(e=>`<button data-a="em" data-v="${e}" class="${draft.e===e?'on':''}">${e}</button>`).join('')}</div>
+  <p><label class="btn alt" style="display:inline-block">🎥 Choose a video<input id="vf" type="file" accept="video/mp4,video/webm,video/quicktime" hidden></label> <span id="vn" class="mu">${draft.file?esc(draft.file.name):'No video chosen (an emoji card is posted instead)'}</span></p>
+  <p class="mu">Max 25 MB. Without a video, pick an emoji clip:</p><div class="row pick">${EM.map(e=>`<button data-a="em" data-v="${e}" class="${draft.e===e?'on':''}">${e}</button>`).join('')}</div>
   <p>Pick a background</p><div class="row">${GR.map((g,i)=>`<button class="sw ${draft.g===i?'on':''}" data-a="bg" data-v="${i}" style="background:${g}" aria-label="Background ${i+1}"></button>`).join('')}</div>
   <p><button class="btn" data-a="post">Publish video</button></p></div></div>`;
  if(tab==='live'){const ls=await api('GET','/live');if(my!==seq)return;
@@ -93,7 +95,7 @@ async function draw(){
   m.innerHTML=`<div class="pad"><h2>@${esc(p.username)}</h2><div class="card stats"><div><b>${p.followers}</b><span>Followers</span></div><div><b>${p.following}</b><span>Following</span></div><div><b>${p.likes}</b><span>Likes</span></div></div>
   <div class="card"><b>Wallet</b><p>🪙 ${p.coins} coins · 💎 ${p.diamonds} diamonds</p><div class="row">${PACKS.map(k=>`<button class="btn alt" data-a="buy" data-c="${k[0]}">🪙 ${k[0]} · ${k[1]}</button>`).join('')}</div>
   <p class="mu">2 diamonds = 1 cent when you cash out.</p><button class="btn" data-a="cash">Cash out diamonds</button></div>
-  <div class="card"><b>My videos</b>${p.videos.map(v=>`<p>${esc(v.emoji)} ${esc(v.caption)} · ♥ ${v.likes}</p>`).join('')||'<p class="mu">No videos yet. Tap + Post to share your first one.</p>'}</div>
+  <div class="card"><b>My videos</b>${p.videos.map(v=>`<p>${v.has_video?'🎥':esc(v.emoji)} ${esc(v.caption)} · ♥ ${v.likes}</p>`).join('')||'<p class="mu">No videos yet. Tap + Post to share your first one.</p>'}</div>
   <button class="btn alt" data-a="logout">Log out</button></div>`}
  }catch(e){if(my===seq){m.innerHTML=`<div class="pad"><h2>Can’t load this</h2><p>${esc(e.message)}</p><button class="btn" data-a="retry">Try again</button></div>`}}
 }
@@ -117,6 +119,7 @@ function openStage(mode,id,host){
 
 document.addEventListener('click',async ev=>{
  const n=ev.target.closest('nav button');if(n)return go(n.dataset.t);
+ const vd=ev.target.closest('.v');if(vd&&!ev.target.closest('.rail')){const vv=vd.querySelector('video');if(vv){vv.muted=!vv.muted;toast(vv.muted?'Sound off':'Sound on')}return}
  const b=ev.target.closest('[data-a]');if(!b)return;const a=b.dataset.a,d=b.dataset;
  try{
  if(a==='login'||a==='signup'){const r=await api('POST','/'+a,{username:$('#u').value,password:$('#p').value});tok=r.token;try{localStorage.setItem('clip_t',tok)}catch(e){}toast('Welcome, @'+r.username);go('feed')}
@@ -127,7 +130,12 @@ document.addEventListener('click',async ev=>{
   document.querySelectorAll('[data-a="fol"]').forEach(x=>{if(x.dataset.by===d.by)x.innerHTML=(r.following?'✓':'+')+'<small>'+(r.following?'Following':'Follow')+'</small>'});
   toast((r.following?'Following @':'Unfollowed @')+d.by)}
  if(a==='em'||a==='bg'){const c=$('#cap').value;if(a==='em')draft.e=d.v;else draft.g=+d.v;draw();setTimeout(()=>{$('#cap').value=c},0)}
- if(a==='post'){await api('POST','/videos',{caption:$('#cap').value,emoji:draft.e,bg:draft.g});toast('Posted!');go('feed')}
+ if(a==='post'){const cap=$('#cap').value;
+  if(draft.file){if(draft.file.size>25*1024*1024)throw new Error('Video too large (max 25 MB)');b.disabled=true;toast('Uploading…');
+   try{const r=await fetch(API_BASE+'/api/videos/upload?caption='+encodeURIComponent(cap),{method:'POST',headers:{Authorization:'Bearer '+tok,'Content-Type':draft.file.type||'video/mp4'},body:draft.file});
+    const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'Upload failed')}finally{b.disabled=false}draft.file=null}
+  else await api('POST','/videos',{caption:cap,emoji:draft.e,bg:draft.g});
+  toast('Posted!');go('feed')}
  if(a==='host'){const r=await api('POST','/live/start');openStage('host',r.live_id)}
  if(a==='watch'){coins=(await api('GET','/me')).coins;openStage('watch',d.id,d.host)}
  if(a==='end'){if(L&&L.mode==='host'){const r=await api('POST','/live/'+L.id+'/end');closeLive();toast('Stream ended. You earned 💎 '+r.earned_diamonds)}else closeLive();go('live')}
@@ -137,6 +145,9 @@ document.addEventListener('click',async ev=>{
  if(a==='cash'){const r=await api('POST','/wallet/cashout');toast('Cashed out 💎 '+r.diamonds+' ≈ $'+r.usd.toFixed(2));draw()}
  }catch(e){toast(e.message)}
 });
+document.addEventListener('change',e=>{if(e.target.id==='vf'){draft.file=e.target.files[0]||null;$('#vn').textContent=draft.file?draft.file.name:'No video chosen'}});
+let vio=null;
+function watchVideos(){if(vio)vio.disconnect();vio=new IntersectionObserver(ents=>ents.forEach(e=>{const v=e.target;if(e.isIntersecting)v.play().catch(()=>{});else v.pause()}),{threshold:.6});document.querySelectorAll('.v video').forEach(v=>vio.observe(v))}
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='ci')document.querySelector('[data-a="chat"]').click();
  if(e.key==='Enter'&&(e.target.id==='u'||e.target.id==='p'))document.querySelector('[data-a="login"]').click()});
 go('feed');

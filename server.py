@@ -1,7 +1,7 @@
 """Clip backend: accounts, videos, likes, follows, live streams, gifts, wallet.
 Python 3.9+ standard library only. Run: python server.py  (http://localhost:8000)
 Live chat and gifts are pushed to viewers with Server-Sent Events (SSE)."""
-import hashlib, json, os, queue, re, secrets, sqlite3, threading, time
+import hashlib, json, os, queue, re, secrets, sqlite3, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("PORT", 8000))
@@ -10,6 +10,10 @@ DIAMOND_PER_COIN = 1.0       # diamonds the host earns per coin gifted
 DIAMONDS_PER_CENT = 2        # payout: 2 diamonds = 1 cent (whole cents, rounded down)
 GIFTS = {"rose": 1, "coffee": 5, "crown": 50, "lion": 299, "rocket": 500}
 PACKS = {70: 99, 350: 499, 700: 999}  # coins -> price in cents
+MAX_MB = int(os.environ.get("CLIP_MAX_MB", 25))  # max upload size
+TYPES = {"video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}
+UPLOAD_DIR = os.environ.get("CLIP_UPLOADS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads"))
+os.makedirs(UPLOAD_DIR, exist_ok=True)  # NOTE: on Render's free plan this folder is erased on restart
 
 DB = sqlite3.connect(os.environ.get("CLIP_DB", "clip.db"), check_same_thread=False, isolation_level=None)
 DB.row_factory = sqlite3.Row
@@ -28,6 +32,8 @@ CREATE TABLE IF NOT EXISTS lives(id INTEGER PRIMARY KEY, host_id INTEGER NOT NUL
 CREATE TABLE IF NOT EXISTS gifts(id INTEGER PRIMARY KEY, live_id INTEGER, from_id INTEGER, gift TEXT, coins INTEGER, created REAL);
 CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY, user_id INTEGER, coins INTEGER, cents INTEGER, created REAL);
 """)
+try: DB.execute("ALTER TABLE videos ADD COLUMN file TEXT")  # real video file name (older databases lack it)
+except sqlite3.OperationalError: pass
 
 def rows(sql, a=()):
     with LOCK: return [dict(r) for r in DB.execute(sql, a).fetchall()]
@@ -65,12 +71,12 @@ def new_session(uid):
     return t
 
 def video_json(v, me):
-    v = dict(v)
+    v = dict(v); v["has_video"] = bool(v.get("has_video"))
     v["liked"] = bool(me and one("SELECT 1 x FROM likes WHERE user_id=? AND video_id=?", (me["id"], v["id"])))
     v["following"] = bool(me and one("SELECT 1 x FROM follows f JOIN users u ON u.id=f.followee_id WHERE f.follower_id=? AND u.name=?", (me["id"], v["by"])))
     return v
 
-VIDEO_SQL = """SELECT v.id, u.name AS by, v.caption, v.emoji, v.bg,
+VIDEO_SQL = """SELECT v.id, u.name AS by, v.caption, v.emoji, v.bg, (v.file IS NOT NULL) AS has_video,
   (SELECT COUNT(*) FROM likes l WHERE l.video_id=v.id) AS likes FROM videos v JOIN users u ON u.id=v.user_id"""
 
 # ---- handlers: each takes (me, body, *path_groups) and returns JSON-able data ----
@@ -217,6 +223,9 @@ class H(BaseHTTPRequestHandler):
     def route(self, method):
         path = self.path.split("?")[0]
         try:
+            if method == "POST" and path == "/api/videos/upload": return self.upload()
+            mm = re.fullmatch(r"/media/(\d+)", path)
+            if method == "GET" and mm: return self.media(mm.group(1))
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}") if n else {}
             if method == "GET" and path in ("/", "/index.html"):
@@ -236,6 +245,60 @@ class H(BaseHTTPRequestHandler):
         except Err as e: self.send_json(e.code, {"error": e.msg})
         except (ValueError, TypeError): self.send_json(400, {"error": "Bad request"})
         except Exception as e: print("ERROR", repr(e)); self.send_json(500, {"error": "Server error"})
+    def upload(self):
+        """Raw video upload: POST /api/videos/upload?caption=... with the file as the request body."""
+        self.close_connection = True
+        me = self.user()
+        if not me: raise Err(401, "Log in first")
+        n = int(self.headers.get("Content-Length") or 0)
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        cap = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("caption", [""])[0].strip()[:60]
+        if ctype not in TYPES: raise Err(415, "Please upload an MP4, WebM or MOV video")
+        if n <= 0: raise Err(400, "Empty file")
+        if n > MAX_MB * 1024 * 1024: raise Err(413, f"Video too large (max {MAX_MB} MB)")
+        if not cap: raise Err(400, "Caption required")
+        name = secrets.token_hex(12) + TYPES[ctype]; fp = os.path.join(UPLOAD_DIR, name); left = n
+        try:
+            with open(fp, "wb") as f:
+                while left:
+                    chunk = self.rfile.read(min(65536, left))
+                    if not chunk: raise Err(400, "Upload was interrupted")
+                    f.write(chunk); left -= len(chunk)
+        except BaseException:
+            if os.path.exists(fp): os.remove(fp)
+            raise
+        with LOCK:
+            vid = DB.execute("INSERT INTO videos(user_id,caption,emoji,bg,created,file) VALUES(?,?,?,?,?,?)",
+                             (me["id"], cap, "🎬", 0, time.time(), name)).lastrowid
+        self.send_json(200, video_json(one(VIDEO_SQL + " WHERE v.id=?", (vid,)), me))
+    def media(self, vid):
+        """Serve an uploaded video, with Range support so players can seek and stream."""
+        v = one("SELECT file FROM videos WHERE id=?", (vid,))
+        fp = v and v["file"] and os.path.join(UPLOAD_DIR, os.path.basename(v["file"]))
+        if not fp or not os.path.exists(fp): raise Err(404, "Video not found")
+        size = os.path.getsize(fp); start, end, code = 0, size - 1, 200
+        ctype = {x: k for k, x in TYPES.items()}[os.path.splitext(fp)[1]]
+        m = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range") or "")
+        if m and (m.group(1) or m.group(2)):
+            a, b = m.groups()
+            start, end = (max(0, size - int(b)), size - 1) if not a else (int(a), min(int(b), size - 1) if b else size - 1)
+            if start > end or start >= size:
+                self.send_response(416); self.send_header("Content-Range", f"bytes */{size}"); self.send_header("Content-Length", "0")
+                self.end_headers(); return
+            code = 206
+        self.send_response(code)
+        for k, val in (("Content-Type", ctype), ("Accept-Ranges", "bytes"), ("Content-Length", end - start + 1),
+                       ("Cache-Control", "public, max-age=3600")): self.send_header(k, val)
+        if code == 206: self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        try:
+            with open(fp, "rb") as f:
+                f.seek(start); left = end - start + 1
+                while left:
+                    chunk = f.read(min(65536, left))
+                    if not chunk: break
+                    self.wfile.write(chunk); left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, OSError): self.close_connection = True
     def stream(self, lid):
         """SSE: viewers subscribe here and receive chat, gift, viewers and end events."""
         l = get_live(lid); lid = int(lid); q = queue.Queue()
