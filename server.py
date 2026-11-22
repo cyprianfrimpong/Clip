@@ -248,15 +248,25 @@ class H(BaseHTTPRequestHandler):
     def upload(self):
         """Raw video upload: POST /api/videos/upload?caption=... with the file as the request body."""
         self.close_connection = True
-        me = self.user()
-        if not me: raise Err(401, "Log in first")
         n = int(self.headers.get("Content-Length") or 0)
-        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        cap = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("caption", [""])[0].strip()[:60]
-        if ctype not in TYPES: raise Err(415, "Please upload an MP4, WebM or MOV video")
-        if n <= 0: raise Err(400, "Empty file")
-        if n > MAX_MB * 1024 * 1024: raise Err(413, f"Video too large (max {MAX_MB} MB)")
-        if not cap: raise Err(400, "Caption required")
+        try:
+            me = self.user()
+            if not me: raise Err(401, "Please log in again")
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            cap = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("caption", [""])[0].strip()[:60]
+            if ctype not in TYPES: raise Err(415, "Please upload an MP4, WebM or MOV video")
+            if n <= 0: raise Err(400, "Empty file")
+            if n > MAX_MB * 1024 * 1024: raise Err(413, f"Video too large (max {MAX_MB} MB)")
+            if not cap: raise Err(400, "Caption required")
+        except Err:
+            # Read and discard the upload first. If the server replies while the browser is still
+            # sending, the browser only sees "Failed to fetch" and never the real message.
+            left = min(n, 100 * 1024 * 1024)
+            while left > 0:
+                chunk = self.rfile.read(min(65536, left))
+                if not chunk: break
+                left -= len(chunk)
+            raise
         name = secrets.token_hex(12) + TYPES[ctype]; fp = os.path.join(UPLOAD_DIR, name); left = n
         try:
             with open(fp, "wb") as f:

@@ -83,7 +83,7 @@ async function draw(){
   <button data-a="fol" data-by="${esc(v.by)}" aria-label="Follow">${v.following?'✓':'+'}<small>${v.following?'Following':'Follow'}</small></button></div></section>`).join('')}</div>`
   :`<div class="pad"><h2>Nothing here yet</h2><p>Tap + Post to share the first video.</p></div>`;watchVideos()}
  if(tab==='post')m.innerHTML=`<div class="pad"><h2>Post a video</h2><div class="card"><label>Caption<input id="cap" maxlength="60" placeholder="What’s happening?"></label>
-  <p><label class="btn alt" style="display:inline-block">🎥 Choose a video<input id="vf" type="file" accept="video/mp4,video/webm,video/quicktime" hidden></label> <span id="vn" class="mu">${draft.file?esc(draft.file.name):'No video chosen (an emoji card is posted instead)'}</span></p>
+  <p><label class="btn alt" style="display:inline-block">🎥 Choose a video<input id="vf" type="file" accept="video/mp4,video/webm,video/quicktime" hidden></label> <span id="vn" class="mu">${draft.file?esc(draft.file.name)+' ('+(draft.file.size/1048576).toFixed(1)+' MB)':'No video chosen (an emoji card is posted instead)'}</span></p>
   <p class="mu">Max 25 MB. Without a video, pick an emoji clip:</p><div class="row pick">${EM.map(e=>`<button data-a="em" data-v="${e}" class="${draft.e===e?'on':''}">${e}</button>`).join('')}</div>
   <p>Pick a background</p><div class="row">${GR.map((g,i)=>`<button class="sw ${draft.g===i?'on':''}" data-a="bg" data-v="${i}" style="background:${g}" aria-label="Background ${i+1}"></button>`).join('')}</div>
   <p><button class="btn" data-a="post">Publish video</button></p></div></div>`;
@@ -131,9 +131,8 @@ document.addEventListener('click',async ev=>{
   toast((r.following?'Following @':'Unfollowed @')+d.by)}
  if(a==='em'||a==='bg'){const c=$('#cap').value;if(a==='em')draft.e=d.v;else draft.g=+d.v;draw();setTimeout(()=>{$('#cap').value=c},0)}
  if(a==='post'){const cap=$('#cap').value;
-  if(draft.file){if(draft.file.size>25*1024*1024)throw new Error('Video too large (max 25 MB)');b.disabled=true;toast('Uploading…');
-   try{const r=await fetch(API_BASE+'/api/videos/upload?caption='+encodeURIComponent(cap),{method:'POST',headers:{Authorization:'Bearer '+tok,'Content-Type':draft.file.type||'video/mp4'},body:draft.file});
-    const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'Upload failed')}finally{b.disabled=false}draft.file=null}
+  if(draft.file){if(draft.file.size>25*1024*1024)throw new Error('Video too large (max 25 MB)');const t0=b.textContent;b.disabled=true;
+   try{await uploadVideo(draft.file,cap,p=>{b.textContent='Uploading… '+p+'%'});draft.file=null}finally{b.disabled=false;b.textContent=t0}}
   else await api('POST','/videos',{caption:cap,emoji:draft.e,bg:draft.g});
   toast('Posted!');go('feed')}
  if(a==='host'){const r=await api('POST','/live/start');openStage('host',r.live_id)}
@@ -145,7 +144,17 @@ document.addEventListener('click',async ev=>{
  if(a==='cash'){const r=await api('POST','/wallet/cashout');toast('Cashed out 💎 '+r.diamonds+' ≈ $'+r.usd.toFixed(2));draw()}
  }catch(e){toast(e.message)}
 });
-document.addEventListener('change',e=>{if(e.target.id==='vf'){draft.file=e.target.files[0]||null;$('#vn').textContent=draft.file?draft.file.name:'No video chosen'}});
+document.addEventListener('change',e=>{if(e.target.id==='vf'){draft.file=e.target.files[0]||null;$('#vn').textContent=draft.file?draft.file.name+' ('+(draft.file.size/1048576).toFixed(1)+' MB)':'No video chosen'}});
+function uploadVideo(file,cap,prog){return new Promise((res,rej)=>{
+ const x=new XMLHttpRequest();x.open('POST',API_BASE+'/api/videos/upload?caption='+encodeURIComponent(cap));
+ x.setRequestHeader('Authorization','Bearer '+tok);x.setRequestHeader('Content-Type',file.type||'video/mp4');x.timeout=600000;
+ x.upload.onprogress=e=>{if(e.lengthComputable)prog(Math.round(e.loaded/e.total*100))};
+ x.onload=()=>{let j={};try{j=JSON.parse(x.responseText)}catch(e){}
+  if(x.status===401){logout();rej(new Error('Please log in again, then retry'))}
+  else if(x.status>=200&&x.status<300)res(j);else rej(new Error(j.error||'Upload failed ('+x.status+')'))};
+ x.onerror=()=>rej(new Error('Network error while uploading. Try Wi-Fi or a shorter video.'));
+ x.ontimeout=()=>rej(new Error('Upload timed out. Try Wi-Fi or a shorter video.'));
+ file.arrayBuffer().then(buf=>x.send(new Blob([buf],{type:file.type||'video/mp4'}))).catch(()=>rej(new Error('Your phone could not read that video. Choose it again.')))})}
 let vio=null;
 function watchVideos(){if(vio)vio.disconnect();vio=new IntersectionObserver(ents=>ents.forEach(e=>{const v=e.target;if(e.isIntersecting)v.play().catch(()=>{});else v.pause()}),{threshold:.6});document.querySelectorAll('.v video').forEach(v=>vio.observe(v))}
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='ci')document.querySelector('[data-a="chat"]').click();
